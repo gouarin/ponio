@@ -400,7 +400,17 @@ namespace ponio::runge_kutta::pirock
             {
                 std::size_t n_eval_sp1 = 0;
 
-                auto op_sp1  = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
+                // I - gamma*dt*R is constant as long as gamma*dt does not change, so it is
+                // built once and rebuilt only when the time step changes (adaptive stepping).
+                // Rebuilding it every step is expensive: samurai's scheme algebra reconstructs
+                // several std::function wrappers (and formats the operator name) at each call.
+                static value_t coeff_sp1 = gamma * dt;
+                static auto op_sp1 = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
+                if ( gamma * dt != coeff_sp1 )
+                {
+                    op_sp1    = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
+                    coeff_sp1 = gamma * dt;
+                }
                 auto rhs_sp1 = u_sm2pl;
                 ::ponio::linear_algebra::operator_algebra<state_t>::solve( op_sp1, u_sp1, rhs_sp1, n_eval_sp1 );
 
@@ -410,8 +420,14 @@ namespace ponio::runge_kutta::pirock
                 pb.implicit_part( tn, u_sp1, fi_tmp );
                 auto& rhs_sp2 = U[11]; // temporary use of U[10] before u_sp3
 
-                auto op_sp2 = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
-                rhs_sp2     = u_sm2pl + beta * dt * fe_tmp + ( 1. - 2. * gamma ) * dt * fi_tmp;
+                static value_t coeff_sp2 = gamma * dt;
+                static auto op_sp2 = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
+                if ( gamma * dt != coeff_sp2 )
+                {
+                    op_sp2    = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
+                    coeff_sp2 = gamma * dt;
+                }
+                rhs_sp2 = u_sm2pl + beta * dt * fe_tmp + ( 1. - 2. * gamma ) * dt * fi_tmp;
                 ::ponio::linear_algebra::operator_algebra<state_t>::solve( op_sp2, u_sp2, rhs_sp2, n_eval_sp2 );
 
                 _info.number_of_eval[1] += n_eval_sp1 + n_eval_sp2 + 1;
