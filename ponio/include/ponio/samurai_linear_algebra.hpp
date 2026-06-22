@@ -118,9 +118,17 @@ namespace ponio::shampine_trick
         {
             bool constexpr is_local_operator = operator_t::cfg_t::stencil_size == 1;
 
-            auto id = ::samurai::make_identity<state_t>();
-            // matrix assembly
-            auto J_R_op = id - alpha * op_reac;
+            // The operator I - alpha*R is mesh-independent and constant as long as alpha
+            // does not change, so it is built once and rebuilt only when alpha changes
+            // (adaptive time stepping). Rebuilding it every call is expensive (samurai's
+            // scheme algebra reconstructs several std::function wrappers each time).
+            static value_t cached_alpha = alpha;
+            static auto J_R_op = ::samurai::make_identity<state_t>() - alpha * op_reac;
+            if ( alpha != cached_alpha )
+            {
+                J_R_op       = ::samurai::make_identity<state_t>() - alpha * op_reac;
+                cached_alpha = alpha;
+            }
 
             auto assembly = samurai::petsc::make_assembly( J_R_op );
             assembly.set_unknown( initial_guess );
@@ -134,10 +142,27 @@ namespace ponio::shampine_trick
             assembly.create_matrix( J_R );
             assembly.assemble_matrix( J_R );
 
-            // linear solver
-            KSP ksp;
+            // The KSP only carries solver options, which are mesh-independent: create it
+            // once and run the costly KSPSetFromOptions (PetscOptionsFindPair) only once.
+            // The matrix/vectors depend on the (possibly adapted) mesh: when the mesh
+            // changes, the matrix size changes and PETSc forbids attaching an operator of
+            // a different size to an already set-up KSP, so the KSP setup is reset first
+            // (KSPReset keeps the solver type and options, it only drops the stale setup).
+            PetscInt n_rows = 0;
+            MatGetSize( J_R, &n_rows, nullptr );
+            static KSP ksp       = nullptr;
+            static PetscInt ksp_rows = -1;
+            if ( ksp == nullptr )
+            {
             KSPCreate( PETSC_COMM_SELF, &ksp );
             KSPSetFromOptions( ksp );
+            }
+            else if ( n_rows != ksp_rows )
+            {
+                KSPReset( ksp );
+            }
+            ksp_rows = n_rows;
+
             KSPSetOperators( ksp, J_R, J_R );
             PetscInt const err = KSPSetUp( ksp );
             if ( err != 0 )
@@ -179,8 +204,8 @@ namespace ponio::shampine_trick
 
             VecDestroy( &u_tmp_petsc );
             VecDestroy( &rhs_petsc );
-            KSPDestroy( &ksp );
             MatDestroy( &J_R );
+            // ksp is persistent (reused across calls): it is not destroyed here.
         }
     };
 
