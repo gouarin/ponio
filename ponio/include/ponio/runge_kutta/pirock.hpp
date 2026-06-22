@@ -26,6 +26,7 @@
 #include "rock.hpp"
 #include "rock_coeff.hpp"
 
+#include <samurai/timers.hpp>
 // NOLINTEND(misc-include-cleaner)
 
 namespace ponio::runge_kutta::pirock
@@ -293,8 +294,13 @@ namespace ponio::runge_kutta::pirock
             //
             // > if method is called as a constant time step method, only index from 0 to 12 are used
 
-            _info.reset_eval();
+            samurai::ScopedTimer timer( "pirock_iteration" );
 
+            samurai::times::timers.start("reset_eval");
+            _info.reset_eval();
+            samurai::times::timers.stop("reset_eval");
+
+            samurai::times::timers.start("rock_2_degree_computation");
             auto [mdeg, deg_index, start_index, n_eval] = degree_computer::compute_n_stages_optimal_degree( rock::rock_order::rock_2(),
                 eig_computer,
                 pb.explicit_part,
@@ -303,6 +309,7 @@ namespace ponio::runge_kutta::pirock
                 dt,
                 U,
                 4 );
+            samurai::times::timers.stop("rock_2_degree_computation");
 
             std::size_t s = mdeg + 2;
 
@@ -331,14 +338,17 @@ namespace ponio::runge_kutta::pirock
             value_t t_jm3 = tn;
 
             // u_1 =u^n + \alpha \mu_1 \Delta F_D( u^n )
+            samurai::times::timers.start("explicit_part");
             pb.explicit_part( tn, un, fe_tmp );
             u_jm1 = un + alpha * dt * mu_1 * fe_tmp;
+            samurai::times::timers.stop("explicit_part");
 
             if ( mdeg < 2 )
             {
                 u_j = u_jm1;
             }
 
+            samurai::times::timers.start("rock_2_stages");
             for ( std::size_t j = 2; j < s - 2 + l + 1; ++j )
             {
                 value_t const mu_j    = rock_coeff::recf[start_index + 2 * ( j - 2 ) + 1 - 1];
@@ -364,6 +374,7 @@ namespace ponio::runge_kutta::pirock
                 t_jm3 = t_jm2;
                 t_jm2 = t_jm1;
             }
+            samurai::times::timers.stop("rock_2_stages");
             // if l == 1
             // u_j -> u_{s-2+l} = u_{s-1}
             // u_jm1 -> u_{s-2+l-1} = u_{s-2}
@@ -379,13 +390,17 @@ namespace ponio::runge_kutta::pirock
 
             // u_{*s-1} = u_{s-2} + \sigma_\alpha \Delta t  F_D( u_{s-2} )
             auto& us_sm1 = U[7];
+            samurai::times::timers.start("explicit_part_2");
             pb.explicit_part( t_jm1, u_sm2, fe_tmp );
             us_sm1 = u_sm2 + sigma_a * dt * fe_tmp;
+            samurai::times::timers.stop("explicit_part_2");
 
             // u_{*s} = u_{*s-1} + \sigma_\alpha \Delta t  F_D( u_{*s-1} )
             auto& us_s = U[8];
+            samurai::times::timers.start("explicit_part_3");
             pb.explicit_part( t_jm1, us_sm1, fe_tmp );
             us_s = us_sm1 + sigma_a * dt * fe_tmp;
+            samurai::times::timers.stop("explicit_part_3");
 
             // u_{s-2+l} = u_j
             auto& u_sm2pl = u_j;
@@ -396,10 +411,12 @@ namespace ponio::runge_kutta::pirock
             auto& u_sp2 = U[10];
             u_sp2       = un;
 
+            samurai::times::timers.start("implicit_part");
             if constexpr ( detail::problem_operator<decltype( pb.implicit_part ), value_t> )
             {
                 std::size_t n_eval_sp1 = 0;
 
+                samurai::times::timers.start("build op_sp1");
                 // I - gamma*dt*R is constant as long as gamma*dt does not change, so it is
                 // built once and rebuilt only when the time step changes (adaptive stepping).
                 // Rebuilding it every step is expensive: samurai's scheme algebra reconstructs
@@ -412,14 +429,22 @@ namespace ponio::runge_kutta::pirock
                     coeff_sp1 = gamma * dt;
                 }
                 auto rhs_sp1 = u_sm2pl;
+                samurai::times::timers.stop("build op_sp1");
+                samurai::times::timers.start("solve op_sp1");
                 ::ponio::linear_algebra::operator_algebra<state_t>::solve( op_sp1, u_sp1, rhs_sp1, n_eval_sp1 );
+                samurai::times::timers.stop("solve op_sp1");
 
                 std::size_t n_eval_sp2 = 0;
 
+                samurai::times::timers.start("explicit_part_4");
                 pb.explicit_part( tn, u_sp1, fe_tmp );
+                samurai::times::timers.stop("explicit_part_4");
+                samurai::times::timers.start("implicit_part_2");
                 pb.implicit_part( tn, u_sp1, fi_tmp );
+                samurai::times::timers.stop("implicit_part_2");
                 auto& rhs_sp2 = U[11]; // temporary use of U[10] before u_sp3
 
+                samurai::times::timers.start("build op_sp2");
                 static value_t coeff_sp2 = gamma * dt;
                 static auto op_sp2 = ::ponio::linear_algebra::operator_algebra<state_t>::identity( un ) - gamma * dt * pb.implicit_part.f_t( tn );
                 if ( gamma * dt != coeff_sp2 )
@@ -428,7 +453,10 @@ namespace ponio::runge_kutta::pirock
                     coeff_sp2 = gamma * dt;
                 }
                 rhs_sp2 = u_sm2pl + beta * dt * fe_tmp + ( 1. - 2. * gamma ) * dt * fi_tmp;
+                samurai::times::timers.stop("build op_sp2");
+                samurai::times::timers.start("solve op_sp2");
                 ::ponio::linear_algebra::operator_algebra<state_t>::solve( op_sp2, u_sp2, rhs_sp2, n_eval_sp2 );
+                samurai::times::timers.stop("solve op_sp2");
 
                 _info.number_of_eval[1] += n_eval_sp1 + n_eval_sp2 + 1;
             }
@@ -473,7 +501,8 @@ namespace ponio::runge_kutta::pirock
                     ponio::default_config::newton_tolerance,
                     ponio::default_config::newton_max_iterations );
             }
-
+            samurai::times::timers.stop("implicit_part");
+            samurai::times::timers.start("rock_3_stages");
             _info.number_of_eval[1] += 3;
 
             auto& u_sp3 = U[11];
@@ -482,9 +511,11 @@ namespace ponio::runge_kutta::pirock
 
             value_t tau   = sigma * rock_coeff::fp2[deg_index - 1] + sigma * sigma;
             value_t tau_a = 0.5 * detail::power<2>( alpha - 1. ) + 2. * alpha * ( 1. - alpha ) * sigma + alpha * alpha * tau;
+            samurai::times::timers.stop("rock_3_stages");
 
             // auto& u_np1 = U[12];
 
+            samurai::times::timers.start("shampine_trick");
             if constexpr ( shampine_trick_enable && detail::problem_operator<decltype( pb.implicit_part ), value_t> )
             {
                 auto& shampine_element = U[12];
@@ -597,7 +628,7 @@ namespace ponio::runge_kutta::pirock
                 u_np1 = us_s - sigma_a * ( 1. - tau_a / ( sigma_a * sigma_a ) ) * dt * ( fe_tmp - fe_tmp_bis ) + 0.5 * dt * fi_tmp
                       + 0.5 * dt * f_tmp + dt / ( 2. - 4. * gamma ) * ( fe_tmp_ter - fe_tmp_qua );
             }
-
+            samurai::times::timers.stop("shampine_trick");
             // return { tn + dt, u_np1, dt };
         }
 

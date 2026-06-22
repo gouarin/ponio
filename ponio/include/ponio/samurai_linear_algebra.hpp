@@ -63,8 +63,13 @@ namespace ponio::linear_algebra
         static void
         solve( operator_t& op, state_t& u, rhs_t& rhs, std::size_t& n_eval )
         {
+            samurai::times::timers.start("init snes solver");
             auto solver = samurai::petsc::make_solver( op );
-            auto _rhs   = static_cast<state_t>( rhs );
+            samurai::times::timers.stop("init snes solver");
+
+            samurai::times::timers.start("solve snes solver");
+            auto _rhs = static_cast<state_t>( rhs );
+
             solver.solve( u, _rhs );
 
             if constexpr ( operator_t::cfg_t::scheme_type == samurai::SchemeType::NonLinear && has_Snes_method<decltype( solver )> )
@@ -79,7 +84,7 @@ namespace ponio::linear_algebra
                 // linear solver, no evaluation of function
                 n_eval = 0;
             }
-
+            samurai::times::timers.stop("solve snes solver");
             //::samurai::petsc::solve( op, u, rhs );
         }
     };
@@ -154,8 +159,8 @@ namespace ponio::shampine_trick
             static PetscInt ksp_rows = -1;
             if ( ksp == nullptr )
             {
-            KSPCreate( PETSC_COMM_SELF, &ksp );
-            KSPSetFromOptions( ksp );
+                KSPCreate( PETSC_COMM_SELF, &ksp );
+                KSPSetFromOptions( ksp );
             }
             else if ( n_rows != ksp_rows )
             {

@@ -686,10 +686,13 @@ namespace ponio
         value_t last_time = t_span.back();
         auto last_it      = t_span.end() - 1;
 
+        samurai::times::timers.start("build method");
         auto meth = make_method<value_t>( std::forward<Algorithm_t>( algo ), un );
+        samurai::times::timers.stop("build method");
 
         obs( current_time, un, dt );
 
+        samurai::times::timers.start("solve");
         while ( current_time < last_time )
         {
             meth( pb, current_time, un, current_dt, un1 );
@@ -713,6 +716,7 @@ namespace ponio
                 current_dt = dt;
             }
         }
+        samurai::times::timers.stop("solve");
 
         return un;
     }
